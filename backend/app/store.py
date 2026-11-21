@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.seed import SEED_ROWS
+from app.seed_migration import SEED_MIGRATION_BATCHES, SEED_MIGRATION_EVENTS
 
 
 class Store:
@@ -14,9 +15,14 @@ class Store:
         self._tables: dict[str, list[dict[str, Any]]] = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
+        # 去重换键迁移的内部台账：以下划线开头，不出现在运营概览里。
+        self._tables["_dedup_migrations"] = [dict(row) for row in SEED_MIGRATION_BATCHES]
+        self._tables["_migration_events"] = [dict(row) for row in SEED_MIGRATION_EVENTS]
+        self._tables["_partition_switch"] = []
 
     def module_names(self) -> list[str]:
-        return sorted(self._tables)
+        """业务模块名；内部台账（_ 前缀）不算业务模块。"""
+        return sorted(name for name in self._tables if not name.startswith("_"))
 
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])

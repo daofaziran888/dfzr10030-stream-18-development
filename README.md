@@ -75,5 +75,34 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 去重换键迁移
+
+`dedup_mgr` 页面下半部分是换键迁移工作台，把「旧订单键 -> 新组合键」的一次迁移
+拆成可回查的批次台账：
+
+- 批次登记时声明旧键字段、新组合键定义、旧批次范围与来源授权；
+- 核对时逐条判定键口径（旧键 / 双键 / 新键），同一事件标识或同一事件指纹只保留
+  一个有效归属；来源不在授权内的按「跨来源修改分区」拒绝并退回源端；
+- 旧键把多笔事件压成一笔、新组合键把它们分开，且分区要切换而旧批次尚未确认时，
+  整组标记为有效归属冲突，确认旧批次后重算即可解除；
+- 同时带两种键、且旧分区与目标分区不同的记录组成「双键分区迁移差额」，移交后由
+  `grp_partition` 消费：按事件标识关联目标归属、回写分区切换清单，无权接管的记录
+  退回源端；已交付批次保持只读，不改动其结论；
+- 批次交付后仍可按旧键回查事件台账与两代键对账，迁移中断后同样可用。
+
+接口：
+
+```text
+GET  /api/dedup_mgr/migrations                 批次列表
+POST /api/dedup_mgr/migrations                 登记批次
+GET  /api/dedup_mgr/migrations/{id}            批次明细（摘要 / 事件 / 差额 / 接管结论）
+POST /api/dedup_mgr/migrations/{id}/events     登记待核对事件
+POST /api/dedup_mgr/migrations/{id}/actions    开始核对 / 确认旧批次 / 移交差额 / 中断迁移 / 继续迁移 / 交付批次
+GET  /api/dedup_mgr/migrations/{id}/legacy     按旧键只读回查
+GET  /api/dedup_mgr/migrations/{id}/reconciliation  两代键对账
+POST /api/grp_partition/{group_id}/migrations/consume  消费差额并回写切换清单
+GET  /api/grp_partition/switch-entries          分区切换清单
+```
+
 领域：数据工程
 子方向：数仓与数据湖

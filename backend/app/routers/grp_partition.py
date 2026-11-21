@@ -1,4 +1,8 @@
-"""分组分区接口：维护分组策略，覆盖启效策略、启动再平衡、停用策略等动作。"""
+"""分组分区接口：维护分组策略，覆盖启效策略、启动再平衡、停用策略等动作。
+
+另含分区迁移接管：消费去重批次移交的双键分区迁移差额，按事件标识关联目标
+归属、回写分区切换清单，无权接管的记录退回源端。
+"""
 from __future__ import annotations
 
 import csv
@@ -9,6 +13,11 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
 from app.services.grp_partition import GrpPartitionService
+from app.services.grp_partition_migration import (
+    GrpPartitionMigrationError,
+    handover_service,
+)
+from app.services.dedup_migration import service as migration_service_ref
 
 router = APIRouter(prefix="/api/grp_partition", tags=["分组分区"])
 
@@ -63,6 +72,39 @@ def export_entries(
     return StreamingResponse(
         iter([output.getvalue()]), media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="grp_partition.csv"'})
+
+
+@router.get("/switch-entries", response_model=PageResult[dict])
+def list_switch_entries(
+    batch_code: str | None = Query(default=None, description="按迁移批次编号过滤"),
+    decision: str | None = Query(default=None, description="已接管、退回源端、归属冲突、待确认"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=500),
+) -> PageResult[dict]:
+    """分区切换清单：按事件标识列出每一笔差额的接管结论与目标归属。"""
+    items, total = handover_service.list_switch_entries(
+        batch_code=batch_code, decision=decision, page=page, size=size)
+    return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.post("/{entry_id}/migrations/consume", response_model=ActionResult)
+def consume_migration(entry_id: int, payload: dict[str, object]) -> ActionResult:
+    """消费去重批次移交的双键分区迁移差额，并把接管结论回写切换清单。"""
+    raw_batch = payload.get("batch_id", payload.get("batch_code"))
+    try:
+        if isinstance(raw_batch, str) and not raw_batch.strip().isdigit():
+            batch = migration_service_ref.find_by_code(raw_batch)
+            if batch is None:
+                return ActionResult(ok=False, message=f"迁移批次 {raw_batch} 不存在或已归档")
+            batch_id = int(batch["id"])
+        elif raw_batch is None:
+            return ActionResult(ok=False, message="缺少 batch_id 或 batch_code")
+        else:
+            batch_id = int(raw_batch)  # type: ignore[arg-type]
+        result = handover_service.consume(batch_id, entry_id)
+    except (GrpPartitionMigrationError, TypeError, ValueError) as error:
+        return ActionResult(ok=False, message=str(error))
+    return ActionResult(ok=True, message="已消费双键分区迁移差额并回写切换清单", entry=result)
 
 
 @router.get("/{entry_id}", response_model=dict)
